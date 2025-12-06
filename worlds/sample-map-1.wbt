@@ -6,13 +6,13 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/factory/fire_extinguisher/protos/FireExtinguisher.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/hospital/protos/MedicineBottle.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/telephone/protos/Telephone.proto"
-EXTERNPROTO "../protos/Mavic2Pro.proto"
+IMPORTABLE EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/dji/mavic/protos/Mavic2Pro.proto"
 
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.21352642708825773 -0.11521769451965282 -0.9701192441161545 4.106074726082519
-  position 34.4856135250829 -41.28299064128073 24.036534231270295
+  orientation -0.03349747185112026 -0.03652535605631166 0.99877115384083 4.7976772531160865
+  position -1.218810536497212 31.281932821082787 3.5420451844877676
 }
 TexturedBackground {
 }
@@ -22,8 +22,8 @@ RectangleArena {
   floorSize 20 20
 }
 FireExtinguisher {
-  translation -3.77053 6.63514 0
-  rotation 0 0 1 -1.5707953071795862
+  translation -3.770530015014759 6.635140002163977 -0.004708884595486296
+  rotation 0.0033356715799572625 -0.00445859059709046 -0.9999844970123277 1.5708108102953489
 }
 DEF flacon MedicineBottle {
   translation 3.13 2.56 0.06
