@@ -11,8 +11,8 @@ IMPORTABLE EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R20
 WorldInfo {
 }
 Viewpoint {
-  orientation -0.03349747185112026 -0.03652535605631166 0.99877115384083 4.7976772531160865
-  position -1.218810536497212 31.281932821082787 3.5420451844877676
+  orientation -0.3494780870451686 -0.2663101328477397 0.8983006065999671 4.342129763434909
+  position 10.289041321135736 9.044911925975677 11.872901272485807
 }
 TexturedBackground {
 }
@@ -22,8 +22,8 @@ RectangleArena {
   floorSize 20 20
 }
 FireExtinguisher {
-  translation -3.770530015014759 6.635140002163977 -0.004708884595486296
-  rotation 0.0033356715799572625 -0.00445859059709046 -0.9999844970123277 1.5708108102953489
+  translation 5.60918 -2.85486 0.0792519
+  rotation 0.0033433893387306702 -0.004468930607034561 -0.9999844250821905 1.57081088222689
 }
 DEF flacon MedicineBottle {
   translation 3.13 2.56 0.06
@@ -34,4 +34,35 @@ Telephone {
   rotation 0 0 1 1.0472
 }
 Mavic2Pro {
+  hidden position_0_0 -6.526762812058869e-09
+  hidden position_7_0 -0.39999999939649106
+  hidden rotation_8 0 -0.9999999999999999 0 0.3999999993964909
+  hidden position_8_0 -0.00023822093363445873
+  hidden rotation_9 -1 0 0 0.0002382209339995906
+  translation 5.43872 -2.49613 0.076433
+  rotation -0.018435591080150103 0.02114098977117389 -0.9996065163518196 1.38881
+  bodySlot [
+    DistanceSensor {
+      translation 0.15 -0.05 -0.05
+      rotation 0 1 0 1.57
+      name "ds_right"
+    }
+    DistanceSensor {
+      translation 0.15 0.05 -0.05
+      rotation 0 1 0 1.57
+      name "ds_left"
+    }
+  ]
+  cameraSlot [
+    Camera {
+      fieldOfView 1.4
+      width 400
+      height 300
+      near 0.05
+      recognition Recognition {
+        maxRange 20
+        frameThickness 3
+      }
+    }
+  ]
 }
