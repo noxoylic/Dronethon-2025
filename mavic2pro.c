@@ -1,177 +1,232 @@
+/*
+ * Copyright 1996-2024 Cyberbotics Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * Description: Drone controller with stabilization, manual control,
+ * and filtered object recognition. Filters by specific object NAME (using id_name property)
+ * and prints the associated name string and position once per cooldown period.
+ */
+
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
-#include <ctype.h>
+#include <stdio.h>    // For printf
+#include <stdlib.h>   // For EXIT_SUCCESS
+#include <string.h>   // For strcmp 
+#include <stdbool.h>  // For bool type
 
 #include <webots/robot.h>
 #include <webots/camera.h>
+#include <webots/compass.h>
 #include <webots/camera_recognition_object.h>
 #include <webots/gps.h>
 #include <webots/gyro.h>
 #include <webots/inertial_unit.h>
-#include <webots/motor.h>
-#include <webots/distance_sensor.h>
+#include <webots/keyboard.h>
 #include <webots/led.h>
+#include <webots/motor.h>
 
-// --- TUNING STATION ---
-#define FORWARD_SIGN 1.0 
-#define TARGET_HEIGHT 1.3 
-// If the drone oscillates (bounces up and down), LOWER k_vert_i
-// If the drone still sinks, INCREASE k_vert_i
-const double k_vert_p = 5.0;  // Immediate reaction
-const double k_vert_i = 0.5;  // "Memory" reaction (Fixes sinking)
-const double k_roll_p = 20.0;
-const double k_pitch_p = 20.0;
+#define SIGN(x) ((x) > 0) - ((x) < 0)
+#define CLAMP(value, low, high) ((value) < (low) ? (low) : ((value) > (high) ? (high) : (value)))
+#define PRINT_COOLDOWN_S 1.0 // Minimum time (in seconds) between detailed recognition prints
 
-// --- HELPERS ---
-#define CLAMP(val, min, max) ((val) < (min) ? (min) : ((val) > (max) ? (max) : (val)))
+// --- TARGET DEFINITIONS ---
+// Define the names (Webots Node Names) to search for
+const char *TARGET_NAMES[] = {
+    "fire extinguisher",
+    "medicine bottle(1)",
+    "Telephone"
+};
+const int NUM_TARGETS = sizeof(TARGET_NAMES) / sizeof(TARGET_NAMES[0]);
 
-bool contains(const char *haystack, const char *needle) {
-    if (!haystack || !needle) return false;
-    char *h = strdup(haystack); char *n = strdup(needle);
-    for(int i = 0; h[i]; i++) h[i] = tolower(h[i]);
-    for(int i = 0; n[i]; i++) n[i] = tolower(n[i]);
-    bool res = (strstr(h, n) != NULL);
-    free(h); free(n);
-    return res;
+
+// Function to check if the detected object's name matches one of the targets
+const char *get_target_name(const char *detected_name) {
+    if (detected_name == NULL) return NULL; // Safety check
+    
+    for (int i = 0; i < NUM_TARGETS; i++) {
+        // Use strcmp to compare the object's ID Name (node name) string
+        if (strcmp(detected_name, TARGET_NAMES[i]) == 0) 
+        {
+            return TARGET_NAMES[i]; // Return the matched name
+        }
+    }
+    return NULL; // No match found
 }
 
+// --- MAIN FUNCTION ---
+
 int main(int argc, char **argv) {
-    wb_robot_init();
-    int timestep = (int)wb_robot_get_basic_time_step();
+  wb_robot_init();
+  int timestep = (int)wb_robot_get_basic_time_step();
 
-    // 1. Devices
-    WbDeviceTag camera = wb_robot_get_device("camera");
-    wb_camera_enable(camera, timestep);
-    wb_camera_recognition_enable(camera, timestep);
+  // Get and enable devices (Initialization code Omitted for brevity)
+  WbDeviceTag camera = wb_robot_get_device("camera");
+  wb_camera_enable(camera, timestep);
+  wb_camera_recognition_enable(camera, timestep); 
+  
+  WbDeviceTag front_left_led = wb_robot_get_device("front left led");
+  WbDeviceTag front_right_led = wb_robot_get_device("front right led");
+  WbDeviceTag imu = wb_robot_get_device("inertial unit");
+  wb_inertial_unit_enable(imu, timestep);
+  WbDeviceTag gps = wb_robot_get_device("gps");
+  wb_gps_enable(gps, timestep);
+  WbDeviceTag compass = wb_robot_get_device("compass");
+  wb_compass_enable(compass, timestep);
+  WbDeviceTag gyro = wb_robot_get_device("gyro");
+  wb_gyro_enable(gyro, timestep);
+  wb_keyboard_enable(timestep);
+  WbDeviceTag camera_roll_motor = wb_robot_get_device("camera roll");
+  WbDeviceTag camera_pitch_motor = wb_robot_get_device("camera pitch");
 
-    WbDeviceTag imu = wb_robot_get_device("inertial unit");
-    wb_inertial_unit_enable(imu, timestep);
-    WbDeviceTag gps = wb_robot_get_device("gps");
-    wb_gps_enable(gps, timestep);
-    WbDeviceTag gyro = wb_robot_get_device("gyro");
-    wb_gyro_enable(gyro, timestep);
-    WbDeviceTag led = wb_robot_get_device("front left led");
+  WbDeviceTag motors[4];
+  char *names[4] = {"front left propeller", "front right propeller", "rear left propeller", "rear right propeller"};
+  for (int i = 0; i < 4; i++) {
+    motors[i] = wb_robot_get_device(names[i]);
+    wb_motor_set_position(motors[i], INFINITY);
+    wb_motor_set_velocity(motors[i], 1.0);
+  }
 
-    WbDeviceTag ds_left = wb_robot_get_device("ds_left");
-    WbDeviceTag ds_right = wb_robot_get_device("ds_right");
-    if(ds_left) wb_distance_sensor_enable(ds_left, timestep);
-    if(ds_right) wb_distance_sensor_enable(ds_right, timestep);
+  // Display messages
+  printf("Start the drone...\n");
+  while (wb_robot_step(timestep) != -1) {
+    if (wb_robot_get_time() > 1.0) break;
+  }
+  printf("NODE NAME INSPECTOR MODE: Filtering by object node names only (id_name).\n");
+  printf("Targets: 'fire extinguisher', 'medicine bottle(1)', 'Telephone'.\n");
 
-    WbDeviceTag cam_pitch = wb_robot_get_device("camera pitch");
-    WbDeviceTag motors[4];
-    char *m_names[] = {"front left propeller", "front right propeller", "rear left propeller", "rear right propeller"};
-    for (int i=0; i<4; i++) {
-        motors[i] = wb_robot_get_device(m_names[i]);
-        wb_motor_set_position(motors[i], INFINITY);
-        wb_motor_set_velocity(motors[i], 1.0);
+  // Constants (for flight control)
+  const double k_vertical_thrust = 68.5;
+  const double k_vertical_offset = 0.6;
+  const double k_vertical_p = 3.0;
+  const double k_roll_p = 50.0;
+  const double k_pitch_p = 30.0;
+  double target_altitude = 1.0;
+
+  // Variable to track last detailed print time (for spam prevention)
+  static double last_print_time = 0.0;
+
+  // Main loop
+  while (wb_robot_step(timestep) != -1) {
+    const double time = wb_robot_get_time();
+
+    // Flight control logic (same as previous)
+    const double roll = wb_inertial_unit_get_roll_pitch_yaw(imu)[0];
+    const double pitch = wb_inertial_unit_get_roll_pitch_yaw(imu)[1];
+    const double altitude = wb_gps_get_values(gps)[2];
+    const double roll_velocity = wb_gyro_get_values(gyro)[0];
+    const double pitch_velocity = wb_gyro_get_values(gyro)[1];
+    const bool led_state = ((int)time) % 2;
+    wb_led_set(front_left_led, led_state);
+    wb_led_set(front_right_led, !led_state);
+    wb_motor_set_position(camera_roll_motor, -0.115 * roll_velocity);
+    wb_motor_set_position(camera_pitch_motor, -0.1 * pitch_velocity);
+    double roll_disturbance = 0.0;
+    double pitch_disturbance = 0.0;
+    double yaw_disturbance = 0.0;
+
+    int key = wb_keyboard_get_key();
+    while (key > 0) {
+      switch (key) {
+        case WB_KEYBOARD_UP: pitch_disturbance = -2.0; break;
+        case WB_KEYBOARD_DOWN: pitch_disturbance = 2.0; break;
+        case WB_KEYBOARD_RIGHT: yaw_disturbance = -1.3; break;
+        case WB_KEYBOARD_LEFT: yaw_disturbance = 1.3; break;
+        case (WB_KEYBOARD_SHIFT + WB_KEYBOARD_RIGHT): roll_disturbance = -1.0; break;
+        case (WB_KEYBOARD_SHIFT + WB_KEYBOARD_LEFT): roll_disturbance = 1.0; break;
+        case (WB_KEYBOARD_SHIFT + WB_KEYBOARD_UP):
+          target_altitude += 0.05;
+          printf("target altitude: %f [m]\n", target_altitude);
+          break;
+        case (WB_KEYBOARD_SHIFT + WB_KEYBOARD_DOWN):
+          target_altitude -= 0.05;
+          printf("target altitude: %f [m]\n", target_altitude);
+          break;
+      }
+      key = wb_keyboard_get_key();
     }
-
-    // 2. Control State
-    double integral_alt_error = 0.0; // The "Memory" of being too low
-    double actual_pitch_cmd = 0.0;
     
-    // Flags
-    bool found_ext = false, found_phone = false, found_med = false;
+    // --- NODE NAME-FILTERED OBJECT RECOGNITION LOGIC (Spam Prevention) ---
 
-    printf("DIAGNOSTIC FLIGHT MODE. Watch Console for object names.\n");
+    int number_of_objects = wb_camera_recognition_get_number_of_objects(camera);
+    const WbCameraRecognitionObject *objects = wb_camera_recognition_get_objects(camera);
+    int filtered_count = 0;
+    bool new_object_detected = false; 
 
-    while (wb_robot_step(timestep) != -1) {
-        double time = wb_robot_get_time();
-
-        // --- SENSORS ---
-        const double *rpy = wb_inertial_unit_get_roll_pitch_yaw(imu);
-        const double *gps_val = wb_gps_get_values(gps);
-        const double *gyro_val = wb_gyro_get_values(gyro);
+    if (number_of_objects > 0) {
         
-        // --- VISION DIAGNOSTICS ---
-        wb_motor_set_position(cam_pitch, -0.9); // Look Down Steeply (approx 50 degrees)
-        
-        int n_obj = wb_camera_recognition_get_number_of_objects(camera);
-        const WbCameraRecognitionObject *objs = wb_camera_recognition_get_objects(camera);
-        
-        for(int i=0; i<n_obj; i++) {
-            char *m = objs[i].model;
-
-            // DIAGNOSTIC PRINT: Print everything so we know what the camera sees
-            // Only print once every second to avoid spamming
-            if ((int)(time * 10) % 20 == 0) { 
-                printf("DEBUG: I see an object named: '%s' at distance %.2fm\n", 
-                        m, sqrt(pow(objs[i].position[0],2) + pow(objs[i].position[2],2)));
-            }
-
-            if (!found_ext && (contains(m, "extinguisher") || contains(m, "fire"))) {
-                found_ext = true;
-                printf("!!! SUCCESS: FOUND EXTINGUISHER at %.2f, %.2f !!!\n", gps_val[0], gps_val[1]);
-                wb_led_set(led, 1);
-            }
-            if (!found_phone && (contains(m, "phone") || contains(m, "mobile"))) {
-                found_phone = true;
-                printf("!!! SUCCESS: FOUND PHONE at %.2f, %.2f !!!\n", gps_val[0], gps_val[1]);
-            }
-            if (!found_med && (contains(m, "medicine") || contains(m, "bottle"))) {
-                found_med = true;
-                printf("!!! SUCCESS: FOUND MEDICINE at %.2f, %.2f !!!\n", gps_val[0], gps_val[1]);
+        for (int i = 0; i < number_of_objects; ++i) {
+            
+            // **CRITICAL CHANGE**: Using objects[i].id_name for the Node Name lookup
+            const char *node_name = objects[i].id_name;
+            
+            // Check if the node name matches a target
+            const char *target_name_string = get_target_name(node_name);
+            
+            if (target_name_string != NULL) {
+                filtered_count++;
+                new_object_detected = true; 
+                
+                // ACTION: ONLY PRINT IF ENOUGH TIME HAS PASSED SINCE LAST PRINT
+                if (time - last_print_time >= PRINT_COOLDOWN_S) {
+                    
+                    double x = objects[i].position[0];
+                    double y = objects[i].position[1];
+                    double z = objects[i].position[2];
+                    
+                    printf("[Time: %.3f s] 🎯 **OBJECT FOUND**:\n", time);
+                    printf("  - Identified Name: **%s**\n", target_name_string);
+                    printf("  - Relative Position (X, Y, Z): [%.2f, %.2f, %.2f] m\n", x, y, z);
+                    
+                    // Crucially, update the last print time to start the cooldown
+                    last_print_time = time;
+                    
+                    // Exit the loop after finding and printing the first object to enforce the cooldown
+                    break;
+                }
             }
         }
-
-        // --- ALTITUDE CONTROL (PI Controller) ---
-        double alt_error = TARGET_HEIGHT - gps_val[2];
-        
-        // INTEGRAL TERM (The Fix): Accumulate error over time
-        // We CLAMP the integral so it doesn't get too crazy (Windup protection)
-        integral_alt_error += alt_error * (timestep / 1000.0);
-        integral_alt_error = CLAMP(integral_alt_error, -15.0, 15.0);
-
-        // P + I Logic
-        double v_input = (k_vert_p * alt_error) + (k_vert_i * integral_alt_error);
-
-        // Tilt Compensation (Boost power if tilted)
-        double angle_correction = cos(CLAMP(rpy[0], -0.5, 0.5)) * cos(CLAMP(rpy[1], -0.5, 0.5));
-        double thrust = (68.5 + v_input) / angle_correction;
-
-        // --- NAVIGATION ---
-        double dl = ds_left ? wb_distance_sensor_get_value(ds_left) : 1000;
-        double dr = ds_right ? wb_distance_sensor_get_value(ds_right) : 1000;
-        bool wall_ahead = (dl < 600 || dr < 600);
-
-        double target_pitch_now = 0.0;
-        
-        double yaw_disturbance = 0.0;
-        
-        // Wait until we are 1m up before moving
-        if (gps_val[2] > 1.0) {
-            if (wall_ahead) {
-                target_pitch_now = 0.0; // Stop
-                yaw_disturbance = 0.8; // Turn
-                integral_alt_error += 0.05; // Cheat: Add extra lift while hovering to be safe
-            } else {
-                target_pitch_now = -0.5 * FORWARD_SIGN; 
-            }
-        }
-
-        // Smooth Ramp
-        if (actual_pitch_cmd < target_pitch_now) actual_pitch_cmd += 0.01;
-        if (actual_pitch_cmd > target_pitch_now) actual_pitch_cmd -= 0.01;
-
-        // --- MOTOR MIXING ---
-        double roll_input = k_roll_p * CLAMP(rpy[0], -1.0, 1.0) + gyro_val[0];
-        double pitch_input = k_pitch_p * CLAMP(rpy[1], -1.0, 1.0) + gyro_val[1] + actual_pitch_cmd;
-        double yaw_input = yaw_disturbance; 
-
-        double m1 = thrust - roll_input + pitch_input - yaw_input;
-        double m2 = thrust + roll_input + pitch_input + yaw_input;
-        double m3 = thrust - roll_input - pitch_input + yaw_input;
-        double m4 = thrust + roll_input - pitch_input - yaw_input;
-
-        wb_motor_set_velocity(motors[0],  m1);
-        wb_motor_set_velocity(motors[1], -m2);
-        wb_motor_set_velocity(motors[2], -m3);
-        wb_motor_set_velocity(motors[3],  m4);
     }
+    
+    // Debug output: Print overall count (filtered) less frequently
+    if ((int)(time * 1000) % 640 == 0) {
+       // Only print the count if no new detailed message was printed this cycle
+       if (!new_object_detected || time - last_print_time > 0.01) { 
+           printf("[Time: %.3f s] Targets in view (Total Matched): %d\n", time, filtered_count);
+       }
+    }
+    // --- END NODE NAME-FILTERED OBJECT RECOGNITION LOGIC ---
 
-    wb_robot_cleanup();
-    return 0;
+
+    // Compute and actuate motor inputs. (Omitted for brevity)
+    const double roll_input = k_roll_p * CLAMP(roll, -1.0, 1.0) + roll_velocity + roll_disturbance;
+    const double pitch_input = k_pitch_p * CLAMP(pitch, -1.0, 1.0) + pitch_velocity + pitch_disturbance;
+    const double yaw_input = yaw_disturbance;
+    const double clamped_difference_altitude = CLAMP(target_altitude - altitude + k_vertical_offset, -1.0, 1.0);
+    const double vertical_input = k_vertical_p * pow(clamped_difference_altitude, 3.0);
+    const double front_left_motor_input = k_vertical_thrust + vertical_input - roll_input + pitch_input - yaw_input;
+    const double front_right_motor_input = k_vertical_thrust + vertical_input + roll_input + pitch_input + yaw_input;
+    const double rear_left_motor_input = k_vertical_thrust + vertical_input - roll_input - pitch_input + yaw_input;
+    const double rear_right_motor_input = k_vertical_thrust + vertical_input + roll_input - pitch_input - yaw_input;
+
+    wb_motor_set_velocity(motors[0], front_left_motor_input);
+    wb_motor_set_velocity(motors[1], -front_right_motor_input);
+    wb_motor_set_velocity(motors[2], -rear_left_motor_input);
+    wb_motor_set_velocity(motors[3], rear_right_motor_input);
+  }
+
+  wb_robot_cleanup();
+
+  return EXIT_SUCCESS;
 }
